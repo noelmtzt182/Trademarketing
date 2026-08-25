@@ -21,8 +21,6 @@ Correr con:
     streamlit run app.py
 """
 
-import io
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
