@@ -4,5 +4,4 @@ numpy>=1.26
 plotly>=5.20
 scikit-learn>=1.4
 statsmodels>=0.14
-opencv-python-headless>=4.9
 pillow>=10.0
