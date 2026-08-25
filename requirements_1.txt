@@ -1,7 +1,0 @@
-streamlit>=1.62.0
-pandas>=2.0
-numpy>=1.26
-plotly>=5.20
-scikit-learn>=1.4
-statsmodels>=0.14
-pillow>=10.0
