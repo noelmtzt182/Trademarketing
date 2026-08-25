@@ -257,9 +257,7 @@ def synthetic_shelf_image(gap_ratio=0.25, width=640, height=360):
 # ----------------------------------------------------------------------------
 # Modelos "IA" ligeros (entrenados en caliente sobre datos sinteticos/reales)
 # ----------------------------------------------------------------------------
-@st.cache_resource
-def train_uplift_model():
-    df = get_promo_training_data()
+def train_uplift_model(df):
     X = df[["descuento_pct", "duracion_dias", "exhibicion_extra", "indice_estacional"]]
     y = df["unidades_incrementales"]
     model = RandomForestRegressor(n_estimators=300, max_depth=6, random_state=42)
@@ -296,10 +294,180 @@ def analyze_shelf_image(pil_image, bg_color=(235, 230, 220), tolerance=18):
 
 
 # ----------------------------------------------------------------------------
+# Carga de dataset real (reemplaza los generadores sinteticos si se sube un
+# archivo). Acepta el mismo .xlsx que genera `generar_dataset.py` (hojas
+# Tiendas, Historico_Promociones, Ventas_Diarias, Alertas_KPI), o cualquier
+# archivo con nombres de hoja/columnas equivalentes.
+# ----------------------------------------------------------------------------
+def _first_matching_col(df, *names):
+    for n in names:
+        if n in df.columns:
+            return n
+    return None
+
+
+def normalize_tiendas(df):
+    d = df.copy()
+    col_vol = _first_matching_col(d, "volumen_promedio", "volumen_promedio_mensual_unidades", "volumen")
+    col_quiebre = _first_matching_col(d, "quiebre_rate", "quiebre_rate_pct", "quiebre_pct")
+    if col_vol and col_vol != "volumen_promedio":
+        d["volumen_promedio"] = d[col_vol]
+    if col_quiebre:
+        vals = pd.to_numeric(d[col_quiebre], errors="coerce")
+        # si viene en escala 0-100 (porcentaje) lo pasamos a fraccion 0-1
+        d["quiebre_rate"] = vals / 100.0 if vals.max() > 1.5 else vals
+    if "cadena" not in d.columns and "canal" in d.columns:
+        d["cadena"] = d["canal"]
+    required = ["tienda_id", "canal", "cadena", "volumen_promedio", "margen_pct", "distancia_cd_km", "rotacion_dias", "quiebre_rate"]
+    faltantes = [c for c in required if c not in d.columns]
+    return d, faltantes
+
+
+def normalize_promos(df):
+    d = df.copy()
+    if "exhibicion_extra" in d.columns and not pd.api.types.is_numeric_dtype(d["exhibicion_extra"]):
+        d["exhibicion_extra"] = (
+            d["exhibicion_extra"].astype(str).str.strip().str.lower()
+            .map({"si": 1, "sí": 1, "yes": 1, "true": 1, "1": 1, "no": 0, "false": 0, "0": 0})
+            .fillna(0).astype(int)
+        )
+    required = ["descuento_pct", "duracion_dias", "exhibicion_extra", "indice_estacional", "unidades_incrementales"]
+    faltantes = [c for c in required if c not in d.columns]
+    return d, faltantes
+
+
+def normalize_ventas(df):
+    d = df.copy()
+    col_fecha = _first_matching_col(d, "fecha", "date")
+    col_ventas = _first_matching_col(d, "ventas_unidades", "ventas", "unidades", "sales")
+    if col_fecha is None or col_ventas is None:
+        faltantes = [n for n, c in [("fecha", col_fecha), ("ventas_unidades", col_ventas)] if c is None]
+        return d, faltantes
+    d = d.rename(columns={col_fecha: "fecha", col_ventas: "ventas_unidades"})
+    col_canal = _first_matching_col(d, "canal", "channel")
+    if col_canal and col_canal != "canal":
+        d = d.rename(columns={col_canal: "canal"})
+    if "canal" not in d.columns:
+        d["canal"] = "Total"
+    d["fecha"] = pd.to_datetime(d["fecha"])
+    d["ventas_unidades"] = pd.to_numeric(d["ventas_unidades"], errors="coerce")
+    return d, []
+
+
+def normalize_alertas(df):
+    d = df.copy()
+    required = ["area", "kpi", "actual", "meta"]
+    faltantes = [c for c in required if c not in d.columns]
+    if "unidad" not in d.columns:
+        d["unidad"] = "%"
+    return d, faltantes
+
+
+def get_effective_store_data():
+    return st.session_state["df_tiendas"] if "df_tiendas" in st.session_state else get_store_data()
+
+
+def get_effective_promo_data():
+    return st.session_state["df_promos"] if "df_promos" in st.session_state else get_promo_training_data()
+
+
+def get_effective_alerts_data():
+    return st.session_state["df_alertas"] if "df_alertas" in st.session_state else get_alerts_data()
+
+
+def get_effective_demand_series(canal_filter=None):
+    if "df_ventas" in st.session_state:
+        d = st.session_state["df_ventas"]
+        if canal_filter and canal_filter != "Todos":
+            d = d[d["canal"] == canal_filter]
+        s = d.groupby("fecha")["ventas_unidades"].sum().sort_index()
+        s = s.asfreq("D").interpolate().bfill().ffill()
+        s.name = "ventas"
+        return s
+    return get_demand_series()
+
+
+# ----------------------------------------------------------------------------
 # UI: Sidebar / navegacion
 # ----------------------------------------------------------------------------
 st.sidebar.title("📊 Trade Marketing AI Suite")
 st.sidebar.caption("Framework Sense → Predict → Act")
+
+st.sidebar.divider()
+st.sidebar.subheader("📂 Tus datos")
+uploaded_dataset = st.sidebar.file_uploader(
+    "Cargar dataset (.xlsx)",
+    type=["xlsx"],
+    help=(
+        "Sube el archivo trade_marketing_dataset.xlsx que generamos (o uno propio con "
+        "hojas Tiendas, Historico_Promociones, Ventas_Diarias, Alertas_KPI) para que la "
+        "app use esos datos en vez de los sintéticos."
+    ),
+)
+
+if uploaded_dataset is not None:
+    try:
+        hojas = pd.read_excel(uploaded_dataset, sheet_name=None)
+        cargadas = []
+
+        hoja = next((s for s in hojas if s.strip().lower().startswith("tienda")), None)
+        if hoja:
+            d, faltantes = normalize_tiendas(hojas[hoja])
+            if not faltantes:
+                st.session_state["df_tiendas"] = d
+                cargadas.append("Tiendas")
+            else:
+                st.sidebar.warning(f"Hoja '{hoja}': faltan columnas {faltantes}")
+
+        hoja = next((s for s in hojas if "promo" in s.strip().lower()), None)
+        if hoja:
+            d, faltantes = normalize_promos(hojas[hoja])
+            if not faltantes:
+                st.session_state["df_promos"] = d
+                cargadas.append("Historico_Promociones")
+            else:
+                st.sidebar.warning(f"Hoja '{hoja}': faltan columnas {faltantes}")
+
+        hoja = next((s for s in hojas if "venta" in s.strip().lower()), None)
+        if hoja:
+            d, faltantes = normalize_ventas(hojas[hoja])
+            if not faltantes:
+                st.session_state["df_ventas"] = d
+                cargadas.append("Ventas_Diarias")
+            else:
+                st.sidebar.warning(f"Hoja '{hoja}': faltan columnas {faltantes}")
+
+        hoja = next((s for s in hojas if "alerta" in s.strip().lower() or "kpi" in s.strip().lower()), None)
+        if hoja:
+            d, faltantes = normalize_alertas(hojas[hoja])
+            if not faltantes:
+                st.session_state["df_alertas"] = d
+                cargadas.append("Alertas_KPI")
+            else:
+                st.sidebar.warning(f"Hoja '{hoja}': faltan columnas {faltantes}")
+
+        if cargadas:
+            st.sidebar.success(f"✅ Cargado: {', '.join(cargadas)}")
+        else:
+            st.sidebar.error("No reconocí hojas compatibles en el archivo.")
+    except Exception as e:
+        st.sidebar.error(f"No pude leer el archivo: {e}")
+else:
+    for k in ["df_tiendas", "df_promos", "df_ventas", "df_alertas"]:
+        st.session_state.pop(k, None)
+
+st.sidebar.caption("**Estado de los datos por módulo:**")
+_estado = {
+    "Tiendas / Segmentación": "df_tiendas",
+    "Promociones / ROI": "df_promos",
+    "Ventas / Forecast": "df_ventas",
+    "Alertas KPI": "df_alertas",
+}
+for _label, _key in _estado.items():
+    _marca = "🟢 Tu dataset" if _key in st.session_state else "⚪ Sintético"
+    st.sidebar.caption(f"{_marca} — {_label}")
+
+st.sidebar.divider()
 
 page = st.sidebar.radio(
     "Modulo",
@@ -317,11 +485,9 @@ page = st.sidebar.radio(
 st.sidebar.divider()
 st.sidebar.caption(
     "⚠️ Esta demo usa **nombres reales de cadenas mexicanas** (Walmart, Soriana, "
-    "OXXO, etc.) para que se sienta cercana a tu mercado, pero los **valores** "
-    "(volumen, margen, quiebre, fees) son sintéticos y solo representan órdenes "
-    "de magnitud típicos por tipo de canal — no cifras confidenciales reales. "
-    "Sustituye los generadores `get_*_data()` y `RETAILER_PRESETS` por tus fuentes "
-    "reales (POS, ERP, TPM, CRM) para producción."
+    "OXXO, etc.) para que se sienta cercana a tu mercado. Sin un dataset cargado, los "
+    "**valores** (volumen, margen, quiebre, fees) son sintéticos — órdenes de magnitud "
+    "típicos por tipo de canal, no cifras confidenciales reales."
 )
 
 # ----------------------------------------------------------------------------
@@ -424,7 +590,9 @@ elif page == "💰 ROI de Promociones (ML)":
         "condiciones. Ajusta los controles para simular un escenario."
     )
 
-    model = train_uplift_model()
+    if "df_promos" in st.session_state:
+        st.caption("🟢 Modelo entrenado con **tu dataset** de promociones cargado.")
+    model = train_uplift_model(get_effective_promo_data())
 
     c1, c2, c3, c4 = st.columns(4)
     descuento = c1.slider("Descuento (%)", 0, 40, 15)
@@ -521,7 +689,9 @@ elif page == "🗺️ Segmentación de Tiendas/Canales":
         "tiendas en perfiles estratégicos, en vez de priorizar solo por tamaño."
     )
 
-    df = get_store_data()
+    df = get_effective_store_data()
+    if "df_tiendas" in st.session_state:
+        st.caption("🟢 Usando **tu dataset** de tiendas cargado.")
     n_clusters = st.slider("Número de clusters", 2, 6, 4)
 
     features = ["volumen_promedio", "margen_pct", "distancia_cd_km", "rotacion_dias", "quiebre_rate"]
@@ -578,8 +748,21 @@ elif page == "📈 Forecast de Demanda":
         "necesidades de inventario y argumentar negociaciones de trade con datos."
     )
 
-    serie = get_demand_series()
+    canal_sel = None
+    if "df_ventas" in st.session_state:
+        st.caption("🟢 Usando **tu dataset** de ventas cargado.")
+        canales_disponibles = ["Todos"] + sorted(st.session_state["df_ventas"]["canal"].dropna().unique().tolist())
+        canal_sel = st.selectbox("Canal", canales_disponibles)
+
+    serie = get_effective_demand_series(canal_sel)
     horizonte = st.slider("Días a pronosticar", 30, 180, 90, 15)
+
+    if len(serie) < 14 or serie.dropna().empty:
+        st.warning(
+            "La serie cargada tiene muy pocos días de historia para pronosticar "
+            "(se necesitan al menos ~14 días). Sube más historia o revisa el filtro de canal."
+        )
+        st.stop()
 
     modelo = ExponentialSmoothing(
         serie, trend="add", seasonal="add", seasonal_periods=7, initialization_method="estimated"
@@ -685,7 +868,9 @@ elif page == "🚨 Alertas Cross-funcionales":
         "para romper silos y alinear prioridades en la misma reunión."
     )
 
-    df = get_alerts_data()
+    df = get_effective_alerts_data()
+    if "df_alertas" in st.session_state:
+        st.caption("🟢 Usando **tu dataset** de alertas/KPI cargado.")
 
     def status(row):
         ratio = row["actual"] / row["meta"]
