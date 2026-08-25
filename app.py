@@ -265,12 +265,36 @@ def train_uplift_model(df):
     return model
 
 
-def analyze_shelf_image(pil_image, bg_color=(235, 230, 220), tolerance=18):
+def estimate_background_color(pil_image, corner_frac=0.08):
+    """
+    Estima el color de fondo del anaquel muestreando las 4 esquinas de la foto
+    (donde suele verse el fondo/pegboard y no el producto). Util para fotos
+    reales, donde el fondo no es un color fijo conocido de antemano.
+    """
+    arr = np.array(pil_image.convert("RGB"))
+    h, w, _ = arr.shape
+    ch, cw = max(1, int(h * corner_frac)), max(1, int(w * corner_frac))
+    esquinas = np.concatenate(
+        [
+            arr[:ch, :cw].reshape(-1, 3),
+            arr[:ch, -cw:].reshape(-1, 3),
+            arr[-ch:, :cw].reshape(-1, 3),
+            arr[-ch:, -cw:].reshape(-1, 3),
+        ],
+        axis=0,
+    )
+    return tuple(np.median(esquinas, axis=0).astype(int))
+
+
+def analyze_shelf_image(pil_image, bg_color=None, tolerance=18):
     """
     Heuristica de vision por computadora (prototipo, no un modelo entrenado):
     estima el % de la imagen que corresponde al color de fondo del anaquel
     (proxy de espacio vacio / quiebre) y el share of shelf por color de marca.
+    Si no se da bg_color, se detecta automaticamente a partir de las esquinas.
     """
+    if bg_color is None:
+        bg_color = estimate_background_color(pil_image)
     arr = np.array(pil_image.convert("RGB")).astype(int)
     bg = np.array(bg_color)
     dist = np.sqrt(((arr - bg) ** 2).sum(axis=-1))
@@ -290,7 +314,7 @@ def analyze_shelf_image(pil_image, bg_color=(235, 230, 220), tolerance=18):
             color = tuple(km.cluster_centers_[lab].astype(int))
             share_of_shelf[color] = round(cnt / total * 100, 1)
 
-    return gap_pct, share_of_shelf
+    return gap_pct, share_of_shelf, bg_color
 
 
 # ----------------------------------------------------------------------------
@@ -532,7 +556,7 @@ soluciones concretas basadas en IA, organizadas en tres capas:
 elif page == "📷 Ejecución en PDV (Computer Vision)":
     st.title("Ejecución en punto de venta con visión por computadora")
     st.write(
-        "Sube una foto de anaquel (o usa la imagen de ejemplo) para estimar "
+        "Sube una foto **real** de un anaquel (o usa la imagen de ejemplo) para estimar "
         "quiebres de stock y share of shelf por color de producto. "
         "Esta es una heurística de demostración; en producción se reemplaza "
         "por un modelo de detección de objetos entrenado con fotos reales del anaquel."
@@ -540,7 +564,7 @@ elif page == "📷 Ejecución en PDV (Computer Vision)":
 
     col_a, col_b = st.columns([1, 1])
     with col_a:
-        uploaded = st.file_uploader("Foto de anaquel", type=["png", "jpg", "jpeg"])
+        uploaded = st.file_uploader("Foto de anaquel (real o de ejemplo)", type=["png", "jpg", "jpeg"])
         gap_demo = st.slider("Quiebre simulado en imagen de ejemplo (%)", 0, 60, 25, 5)
         use_demo = st.button("Generar imagen de ejemplo")
 
@@ -555,7 +579,23 @@ elif page == "📷 Ejecución en PDV (Computer Vision)":
     with col_b:
         st.image(image, caption="Imagen analizada", width='stretch')
 
-    gap_pct, shares = analyze_shelf_image(image)
+    with st.expander("⚙️ Ajustes de detección (útil sobre todo con fotos reales)", expanded=False):
+        auto_bg = st.checkbox(
+            "Detectar automáticamente el color de fondo (recomendado)", value=True,
+            help="Toma muestras de las 4 esquinas de la foto para adivinar el color del fondo del anaquel.",
+        )
+        tolerancia = st.slider(
+            "Sensibilidad (tolerancia de color)", 5, 80, 18,
+            help="Más bajo = más estricto para considerar un pixel como 'fondo/hueco'. Más alto = detecta más variación de luz/sombra como fondo.",
+        )
+        bg_manual = None
+        if not auto_bg:
+            bg_manual_hex = st.color_picker("Color de fondo del anaquel (elige con el gotero de tu foto)", "#EBE6DC")
+            bg_manual = tuple(int(bg_manual_hex[i : i + 2], 16) for i in (1, 3, 5))
+
+    gap_pct, shares, bg_usado = analyze_shelf_image(image, bg_color=bg_manual, tolerance=tolerancia)
+
+    st.caption(f"Color de fondo usado para el análisis: `rgb{bg_usado}` " + ("(detectado automáticamente)" if auto_bg else "(elegido manualmente)"))
 
     st.divider()
     m1, m2 = st.columns(2)
@@ -572,11 +612,23 @@ elif page == "📷 Ejecución en PDV (Computer Vision)":
         fig.update_layout(showlegend=False)
         st.plotly_chart(fig, width='stretch')
 
+    with st.expander("💡 Tips para que funcione mejor con fotos reales"):
+        st.markdown(
+            "- Funciona mejor si el **hueco/quiebre real se ve como un fondo relativamente "
+            "uniforme** (charola, pegboard, cartón) y no como otro producto detrás.\n"
+            "- Evita fotos muy oscuras o con mucho reflejo/flash directo sobre el anaquel.\n"
+            "- Si el resultado no cuadra, sube la **sensibilidad** en 'Ajustes de detección', o "
+            "desactiva la detección automática y elige tú el color de fondo con el gotero.\n"
+            "- Sigue siendo una heurística por color, no un modelo entrenado para reconocer "
+            "productos — no distingue \"aquí no hay producto\" de \"aquí hay un producto del "
+            "mismo color que el fondo\"."
+        )
+
     st.caption(
-        "En una implementación real: (1) la foto se sube desde la app del promotor/vendedor, "
-        "(2) un modelo de detección de objetos (p. ej. YOLO afinado con SKUs propios) identifica "
-        "cada producto y su posición, (3) se compara contra el planograma acordado y (4) se dispara "
-        "una alerta automática al supervisor o al equipo de reposición si hay incumplimiento."
+        "En una implementación de producción real, este paso se reemplaza por un modelo de "
+        "detección de objetos (p. ej. YOLO afinado con fotos y SKUs propios) que identifica cada "
+        "producto y su posición, lo compara contra el planograma acordado, y dispara una alerta "
+        "automática al supervisor o al equipo de reposición si hay incumplimiento."
     )
 
 # ----------------------------------------------------------------------------
@@ -898,4 +950,3 @@ elif page == "🚨 Alertas Cross-funcionales":
         "En producción, estas métricas se calculan en tiempo real desde POS, TPM y el CRM, "
         "y se pueden enviar automáticamente por Slack/Teams cuando un KPI cae en zona crítica."
     )
-
