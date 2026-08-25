@@ -78,24 +78,129 @@ def get_promo_training_data(n=400):
     )
 
 
+# Mapa canal -> cadenas reales del mercado mexicano, con rangos de comportamiento
+# TIPICOS de cada tipo de canal (orden de magnitud ilustrativo, no cifras
+# confidenciales ni oficiales de ninguna cadena). Ajusta libremente si tienes
+# benchmarks propios.
+CANAL_CONFIG = {
+    "Autoservicio": {
+        "cadenas": ["Walmart", "Soriana", "Chedraui", "HEB", "La Comer"],
+        "peso": 0.28,
+        "volumen_shape_scale": (2.6, 6000),   # gamma(shape, scale)
+        "margen": (20, 5),                     # normal(mu, sigma)
+        "distancia_cd_km": (10, 150),
+        "rotacion_dias": (7, 3),
+        "quiebre_rate": (0.06, 0.03),
+    },
+    "Bodega/Descuento": {
+        "cadenas": ["Bodega Aurrera", "Waldo's"],
+        "peso": 0.12,
+        "volumen_shape_scale": (2.3, 5000),
+        "margen": (14, 4),
+        "distancia_cd_km": (10, 200),
+        "rotacion_dias": (6, 3),
+        "quiebre_rate": (0.07, 0.04),
+    },
+    "Conveniencia": {
+        "cadenas": ["OXXO", "7-Eleven", "Circle K", "Extra"],
+        "peso": 0.2,
+        "volumen_shape_scale": (2.0, 1200),
+        "margen": (32, 6),
+        "distancia_cd_km": (5, 80),
+        "rotacion_dias": (3, 2),
+        "quiebre_rate": (0.05, 0.03),
+    },
+    "Club de precio": {
+        "cadenas": ["Sam's Club", "Costco"],
+        "peso": 0.05,
+        "volumen_shape_scale": (3.2, 9000),
+        "margen": (11, 3),
+        "distancia_cd_km": (15, 250),
+        "rotacion_dias": (10, 4),
+        "quiebre_rate": (0.04, 0.02),
+    },
+    "Tradicional": {
+        "cadenas": ["Abarrotes independientes"],
+        "peso": 0.25,
+        "volumen_shape_scale": (1.6, 700),
+        "margen": (26, 8),
+        "distancia_cd_km": (5, 400),
+        "rotacion_dias": (14, 6),
+        "quiebre_rate": (0.18, 0.08),
+    },
+    "E-commerce": {
+        "cadenas": ["Walmart.com.mx", "Mercado Libre", "Amazon MX"],
+        "peso": 0.1,
+        "volumen_shape_scale": (2.4, 4000),
+        "margen": (18, 5),
+        "distancia_cd_km": (20, 300),
+        "rotacion_dias": (2, 1),
+        "quiebre_rate": (0.05, 0.03),
+    },
+}
+
+
+# Presets ILUSTRATIVOS por cadena para el simulador de negociación: reflejan
+# patrones generales y de conocimiento público sobre cómo suele negociar cada
+# tipo de canal (autoservicio vs. conveniencia vs. club de precio), NO cifras
+# reales ni confidenciales de ninguna cadena. Ajusta con tus propios términos
+# reales de negociación cuando los tengas.
+RETAILER_PRESETS = {
+    "Walmart":                 {"descuento": 22, "fee": 20000, "display": True,  "uplift_display": 0.15},
+    "Soriana":                 {"descuento": 20, "fee": 25000, "display": True,  "uplift_display": 0.14},
+    "Chedraui":                {"descuento": 18, "fee": 20000, "display": True,  "uplift_display": 0.13},
+    "HEB":                     {"descuento": 15, "fee": 15000, "display": False, "uplift_display": 0.10},
+    "La Comer":                {"descuento": 12, "fee": 10000, "display": False, "uplift_display": 0.10},
+    "Bodega Aurrera":          {"descuento": 25, "fee": 10000, "display": True,  "uplift_display": 0.16},
+    "Waldo's":                 {"descuento": 25, "fee": 8000,  "display": True,  "uplift_display": 0.15},
+    "OXXO":                    {"descuento": 10, "fee": 60000, "display": True,  "uplift_display": 0.20},
+    "7-Eleven":                {"descuento": 10, "fee": 40000, "display": True,  "uplift_display": 0.18},
+    "Circle K":                {"descuento": 10, "fee": 30000, "display": True,  "uplift_display": 0.16},
+    "Extra":                   {"descuento": 10, "fee": 25000, "display": True,  "uplift_display": 0.15},
+    "Sam's Club":              {"descuento": 15, "fee": 15000, "display": False, "uplift_display": 0.08},
+    "Costco":                  {"descuento": 12, "fee": 10000, "display": False, "uplift_display": 0.08},
+    "Abarrotes independientes": {"descuento": 5,  "fee": 0,     "display": False, "uplift_display": 0.05},
+    "Walmart.com.mx":          {"descuento": 15, "fee": 5000,  "display": True,  "uplift_display": 0.12},
+    "Mercado Libre":           {"descuento": 15, "fee": 5000,  "display": True,  "uplift_display": 0.12},
+    "Amazon MX":               {"descuento": 15, "fee": 5000,  "display": True,  "uplift_display": 0.12},
+}
+
+
 @st.cache_data
-def get_store_data(n=120):
-    """Universo sintetico de tiendas para segmentacion."""
-    canal = RNG.choice(
-        ["Autoservicio", "Conveniencia", "Tradicional", "Mayoreo", "E-commerce"],
-        size=n,
-        p=[0.25, 0.2, 0.3, 0.15, 0.1],
-    )
-    volumen_promedio = RNG.gamma(shape=2.2, scale=4000, size=n)
-    margen_pct = np.clip(RNG.normal(22, 6, n), 5, 45)
-    distancia_cd_km = RNG.uniform(5, 400, n)
-    rotacion_dias = np.clip(RNG.normal(12, 5, n), 2, 40)
-    quiebre_rate = np.clip(RNG.normal(0.08, 0.05, n), 0, 0.4)
+def get_store_data(n=150):
+    """
+    Universo de tiendas con nombres de cadenas reales del mercado mexicano.
+    Los VALORES (volumen, margen, quiebre, etc.) siguen siendo sintéticos:
+    representan órdenes de magnitud típicos de cada tipo de canal, no datos
+    confidenciales de ninguna empresa en particular.
+    """
+    canales = list(CANAL_CONFIG.keys())
+    pesos = [CANAL_CONFIG[c]["peso"] for c in canales]
+    pesos = np.array(pesos) / sum(pesos)
+    canal_asignado = RNG.choice(canales, size=n, p=pesos)
+
+    cadena, volumen_promedio, margen_pct = [], [], []
+    distancia_cd_km, rotacion_dias, quiebre_rate = [], [], []
+
+    for c in canal_asignado:
+        cfg = CANAL_CONFIG[c]
+        cadena.append(RNG.choice(cfg["cadenas"]))
+        shape, scale = cfg["volumen_shape_scale"]
+        volumen_promedio.append(RNG.gamma(shape=shape, scale=scale))
+        mu, sigma = cfg["margen"]
+        margen_pct.append(np.clip(RNG.normal(mu, sigma), 5, 50))
+        lo, hi = cfg["distancia_cd_km"]
+        distancia_cd_km.append(RNG.uniform(lo, hi))
+        mu_r, sigma_r = cfg["rotacion_dias"]
+        rotacion_dias.append(np.clip(RNG.normal(mu_r, sigma_r), 1, 45))
+        mu_q, sigma_q = cfg["quiebre_rate"]
+        quiebre_rate.append(np.clip(RNG.normal(mu_q, sigma_q), 0, 0.5))
 
     return pd.DataFrame(
         {
             "tienda_id": [f"T-{i:04d}" for i in range(n)],
-            "canal": canal,
+            "canal": canal_asignado,
+            "cadena": cadena,
             "volumen_promedio": volumen_promedio,
             "margen_pct": margen_pct,
             "distancia_cd_km": distancia_cd_km,
@@ -123,11 +228,11 @@ def get_alerts_data():
     return pd.DataFrame(
         [
             {"area": "Ventas", "kpi": "Cumplimiento de plan mensual", "actual": 91, "meta": 95, "unidad": "%"},
-            {"area": "Ventas", "kpi": "Quiebres de stock (tiendas clave)", "actual": 9.4, "meta": 5, "unidad": "%"},
+            {"area": "Ventas", "kpi": "Quiebres de stock en Walmart y Soriana", "actual": 9.4, "meta": 5, "unidad": "%"},
             {"area": "Trade Marketing", "kpi": "ROI de promociones activas", "actual": 1.6, "meta": 2.0, "unidad": "x"},
-            {"area": "Trade Marketing", "kpi": "Cumplimiento de planograma", "actual": 78, "meta": 90, "unidad": "%"},
-            {"area": "Marketing", "kpi": "Share of shelf vs objetivo", "actual": 24, "meta": 30, "unidad": "%"},
-            {"area": "Marketing", "kpi": "Inversion en retail media utilizada", "actual": 61, "meta": 85, "unidad": "%"},
+            {"area": "Trade Marketing", "kpi": "Cumplimiento de planograma en OXXO", "actual": 78, "meta": 90, "unidad": "%"},
+            {"area": "Marketing", "kpi": "Share of shelf vs. objetivo (Chedraui)", "actual": 24, "meta": 30, "unidad": "%"},
+            {"area": "Marketing", "kpi": "Inversión en retail media utilizada", "actual": 61, "meta": 85, "unidad": "%"},
         ]
     )
 
@@ -211,9 +316,12 @@ page = st.sidebar.radio(
 
 st.sidebar.divider()
 st.sidebar.caption(
-    "⚠️ Todos los datos de esta demo son sintéticos. "
-    "Sustituye los generadores `get_*_data()` por tus fuentes reales "
-    "(POS, ERP, TPM, CRM) para producción."
+    "⚠️ Esta demo usa **nombres reales de cadenas mexicanas** (Walmart, Soriana, "
+    "OXXO, etc.) para que se sienta cercana a tu mercado, pero los **valores** "
+    "(volumen, margen, quiebre, fees) son sintéticos y solo representan órdenes "
+    "de magnitud típicos por tipo de canal — no cifras confidenciales reales. "
+    "Sustituye los generadores `get_*_data()` y `RETAILER_PRESETS` por tus fuentes "
+    "reales (POS, ERP, TPM, CRM) para producción."
 )
 
 # ----------------------------------------------------------------------------
@@ -423,7 +531,7 @@ elif page == "🗺️ Segmentación de Tiendas/Canales":
 
     fig = px.scatter(
         df, x="volumen_promedio", y="margen_pct", color="cluster",
-        symbol="canal", hover_data=["tienda_id", "canal", "quiebre_rate", "rotacion_dias"],
+        symbol="canal", hover_data=["tienda_id", "canal", "cadena", "quiebre_rate", "rotacion_dias"],
         title="Tiendas por volumen y margen, coloreadas por cluster",
     )
     st.plotly_chart(fig, width='stretch')
@@ -432,6 +540,19 @@ elif page == "🗺️ Segmentación de Tiendas/Canales":
     perfil = df.groupby("cluster")[features].mean().round(1)
     perfil["n_tiendas"] = df.groupby("cluster").size()
     st.dataframe(perfil, width='stretch')
+
+    with st.expander("Ver detalle de tiendas y cadenas por cluster"):
+        st.dataframe(
+            df[["tienda_id", "canal", "cadena", "cluster", "volumen_promedio", "margen_pct", "quiebre_rate"]]
+            .sort_values(["cluster", "canal"]),
+            width='stretch',
+            hide_index=True,
+        )
+        st.caption(
+            "Las cadenas mostradas son nombres reales de retailers mexicanos usados como "
+            "referencia de canal; los valores de volumen, margen y quiebre son sintéticos "
+            "(órdenes de magnitud típicos por tipo de canal, no cifras confidenciales de ninguna empresa)."
+        )
 
     st.subheader("Recomendación de acción por cluster")
     for c in sorted(df["cluster"].unique()):
@@ -491,23 +612,41 @@ elif page == "🤝 Simulador de Negociación":
         "sentarte a negociar, con impacto estimado en volumen y margen."
     )
 
+    cadena_sel = st.selectbox("Cadena con la que vas a negociar", list(RETAILER_PRESETS.keys()))
+    preset = RETAILER_PRESETS[cadena_sel]
+    st.caption(
+        f"Valores iniciales cargados a partir de un perfil típico de **{cadena_sel}** "
+        "(referencia ilustrativa, no cifras confidenciales reales) — ajústalos libremente."
+    )
+
     volumen_base = st.number_input("Volumen base mensual (unidades)", value=20000, step=500)
     precio_regular = st.number_input("Precio regular (MXN)", value=45.0, step=1.0, key="neg_precio")
     costo_unitario = st.number_input("Costo unitario (MXN)", value=28.0, step=1.0, key="neg_costo")
 
-    st.subheader("Propuesta del retailer")
+    st.subheader(f"Propuesta de {cadena_sel}")
     c1, c2, c3 = st.columns(3)
-    desc_retailer = c1.slider("Descuento solicitado (%)", 0, 40, 20, key="dr")
-    fee_retailer = c2.number_input("Listing fee / cuota fija (MXN)", value=50000, step=5000, key="fr")
-    display_retailer = c3.selectbox("Exhibición adicional incluida", ["No", "Sí"], key="disr") == "Sí"
+    desc_retailer = c1.slider("Descuento solicitado (%)", 0, 40, preset["descuento"], key=f"dr_{cadena_sel}")
+    fee_retailer = c2.number_input(
+        "Listing fee / cuota fija (MXN)", value=preset["fee"], step=5000, key=f"fr_{cadena_sel}"
+    )
+    display_retailer = (
+        c3.selectbox("Exhibición adicional incluida", ["No", "Sí"], index=1 if preset["display"] else 0, key=f"disr_{cadena_sel}")
+        == "Sí"
+    )
 
     st.subheader("Tu contrapropuesta")
     c4, c5, c6 = st.columns(3)
-    desc_propio = c4.slider("Descuento ofrecido (%)", 0, 40, 12, key="dp")
-    fee_propio = c5.number_input("Listing fee / cuota fija (MXN) ", value=20000, step=5000, key="fp")
-    display_propio = c6.selectbox("Exhibición adicional ofrecida ", ["No", "Sí"], key="disp") == "Sí"
+    desc_propio = c4.slider("Descuento ofrecido (%)", 0, 40, max(preset["descuento"] - 8, 0), key=f"dp_{cadena_sel}")
+    fee_propio = c5.number_input(
+        "Listing fee / cuota fija (MXN) ", value=max(preset["fee"] - 10000, 0), step=5000, key=f"fp_{cadena_sel}"
+    )
+    display_propio = (
+        c6.selectbox("Exhibición adicional ofrecida ", ["No", "Sí"], index=1 if preset["display"] else 0, key=f"disp_{cadena_sel}")
+        == "Sí"
+    )
 
-    def escenario(descuento, fee, display, uplift_por_display=0.12, uplift_por_desc=0.9):
+    def escenario(descuento, fee, display, uplift_por_display=None, uplift_por_desc=0.9):
+        uplift_por_display = preset["uplift_display"] if uplift_por_display is None else uplift_por_display
         precio_promo = precio_regular * (1 - descuento / 100)
         margen_unit = precio_promo - costo_unitario
         uplift = volumen_base * (uplift_por_desc * descuento / 100 + (uplift_por_display if display else 0))
@@ -520,7 +659,7 @@ elif page == "🤝 Simulador de Negociación":
 
     comp_df = pd.DataFrame(
         {
-            "Escenario": ["Propuesta del retailer", "Tu contrapropuesta"],
+            "Escenario": [f"Propuesta de {cadena_sel}", "Tu contrapropuesta"],
             "Volumen estimado": [vol_r, vol_p],
             "Margen neto estimado (MXN)": [marg_r, marg_p],
         }
@@ -532,9 +671,9 @@ elif page == "🤝 Simulador de Negociación":
 
     diferencia = marg_p - marg_r
     if diferencia > 0:
-        st.success(f"Tu contrapropuesta genera **${diferencia:,.0f} MXN** más de margen neto que la propuesta del retailer.")
+        st.success(f"Tu contrapropuesta genera **${diferencia:,.0f} MXN** más de margen neto que la propuesta de {cadena_sel}.")
     else:
-        st.warning(f"La propuesta del retailer genera **${-diferencia:,.0f} MXN** más de margen neto que tu contrapropuesta actual.")
+        st.warning(f"La propuesta de {cadena_sel} genera **${-diferencia:,.0f} MXN** más de margen neto que tu contrapropuesta actual.")
 
 # ----------------------------------------------------------------------------
 # PAGINA: Alertas cross-funcionales
@@ -574,3 +713,4 @@ elif page == "🚨 Alertas Cross-funcionales":
         "En producción, estas métricas se calculan en tiempo real desde POS, TPM y el CRM, "
         "y se pueden enviar automáticamente por Slack/Teams cuando un KPI cae en zona crítica."
     )
+
