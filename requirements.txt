@@ -5,3 +5,5 @@ plotly>=5.20
 scikit-learn>=1.4
 statsmodels>=0.14
 pillow>=10.0
+openpyxl>=3.1
+
